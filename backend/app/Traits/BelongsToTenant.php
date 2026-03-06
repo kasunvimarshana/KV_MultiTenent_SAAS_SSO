@@ -59,6 +59,6 @@ trait BelongsToTenant
      */
     public static function withoutTenant(callable $callback): mixed
     {
-        return static::withoutGlobalScope('tenant')->tap($callback);
+        return $callback(static::withoutGlobalScope('tenant'));
     }
 }

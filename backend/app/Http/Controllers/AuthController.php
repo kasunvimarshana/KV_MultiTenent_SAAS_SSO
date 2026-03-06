@@ -127,7 +127,7 @@ class AuthController extends BaseController
             'email'     => $user->email,
             'roles'     => $user->getRoleNames(),
             'scopes'    => $request->user()->token()->scopes ?? [],
-            'expires_at'=> $user->token()->expires_at ?? null,
+            'expires_at' => $user->token()->expires_at ?? null,
         ]);
     }
 
