@@ -28,7 +28,7 @@ class WebhookController extends BaseController
 
     public function store(Request $request): JsonResponse
     {
-        $request->validate([
+        $validated = $request->validate([
             'url'         => ['required', 'url', 'max:500'],
             'events'      => ['required', 'array'],
             'events.*'    => ['string'],
@@ -36,7 +36,7 @@ class WebhookController extends BaseController
             'description' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $webhook = $this->webhookService->registerWebhook($request->validated());
+        $webhook = $this->webhookService->registerWebhook($validated);
 
         return $this->createdResponse($webhook, 'Webhook registered');
     }
@@ -54,7 +54,7 @@ class WebhookController extends BaseController
 
     public function update(Request $request, int $id): JsonResponse
     {
-        $request->validate([
+        $validated = $request->validate([
             'url'         => ['sometimes', 'url', 'max:500'],
             'events'      => ['sometimes', 'array'],
             'events.*'    => ['string'],
@@ -62,7 +62,7 @@ class WebhookController extends BaseController
             'description' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $webhook = $this->webhookService->updateWebhook($id, $request->validated());
+        $webhook = $this->webhookService->updateWebhook($id, $validated);
         return $this->successResponse($webhook, 'Webhook updated');
     }
 
