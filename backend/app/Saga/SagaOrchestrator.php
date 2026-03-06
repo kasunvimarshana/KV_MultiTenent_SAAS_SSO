@@ -2,6 +2,7 @@
 
 namespace App\Saga;
 
+use App\Models\SagaLog;
 use App\Saga\Contracts\SagaInterface;
 use Illuminate\Support\Facades\Log;
 
@@ -34,21 +35,27 @@ class SagaOrchestrator
     /**
      * Execute a list of saga steps in sequence.
      * On any step failure, compensating transactions run in reverse order.
+     * State is persisted to `saga_logs` for observability and recovery.
      *
-     * @param string        $sagaId   Unique saga identifier (correlates distributed logs).
-     * @param SagaInterface[] $steps  Ordered list of saga steps.
-     * @param array         $context  Initial context passed to steps.
+     * @param string          $sagaId   Unique saga identifier (correlates distributed logs).
+     * @param SagaInterface[] $steps    Ordered list of saga steps.
+     * @param array           $context  Initial context passed to steps.
+     * @param string          $sagaType Human-readable pipeline name (e.g. 'place_order').
      */
-    public function run(string $sagaId, array $steps, array $context = []): SagaResult
+    public function run(string $sagaId, array $steps, array $context = [], string $sagaType = 'generic'): SagaResult
     {
         $executed        = [];
         $compensationLog = [];
 
         Log::info("[Saga:{$sagaId}] Starting with " . count($steps) . " steps.");
 
+        $sagaLog = $this->createLog($sagaId, $sagaType, $context);
+
         foreach ($steps as $step) {
             /** @var SagaInterface $step */
             $stepName = $step->getName();
+
+            $this->updateLog($sagaLog, ['current_step' => $stepName]);
 
             try {
                 Log::info("[Saga:{$sagaId}] Executing step: {$stepName}");
@@ -58,8 +65,20 @@ class SagaOrchestrator
             } catch (\Throwable $e) {
                 Log::error("[Saga:{$sagaId}] Step '{$stepName}' failed: {$e->getMessage()}");
 
+                $this->updateLog($sagaLog, ['status' => SagaLog::STATUS_COMPENSATING]);
+
                 // Run compensating transactions in reverse
                 $compensationLog = $this->compensate($sagaId, array_reverse($executed), $context);
+
+                $finalStatus = $this->resolveCompensationStatus($compensationLog);
+
+                $this->updateLog($sagaLog, [
+                    'status'           => $finalStatus,
+                    'error_message'    => "Step '{$stepName}' failed: {$e->getMessage()}",
+                    'compensation_log' => $compensationLog,
+                    'context'          => $this->safeSerializeContext($context),
+                    'completed_at'     => now(),
+                ]);
 
                 return new SagaResult(
                     false,
@@ -71,6 +90,13 @@ class SagaOrchestrator
         }
 
         Log::info("[Saga:{$sagaId}] All steps completed successfully.");
+
+        $this->updateLog($sagaLog, [
+            'status'       => SagaLog::STATUS_COMPLETED,
+            'current_step' => null,
+            'context'      => $this->safeSerializeContext($context),
+            'completed_at' => now(),
+        ]);
 
         return new SagaResult(true, '', $context, $compensationLog);
     }
@@ -102,5 +128,73 @@ class SagaOrchestrator
         }
 
         return $log;
+    }
+
+    // ─── Persistence helpers ──────────────────────────────────────────────
+
+    private function createLog(string $sagaId, string $sagaType, array $context): ?SagaLog
+    {
+        try {
+            return SagaLog::create([
+                'saga_id'   => $sagaId,
+                'saga_type' => $sagaType,
+                'status'    => SagaLog::STATUS_STARTED,
+                'context'   => $this->safeSerializeContext($context),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning("[Saga:{$sagaId}] Could not persist saga log: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    private function updateLog(?SagaLog $log, array $attributes): void
+    {
+        if ($log === null) {
+            return;
+        }
+
+        try {
+            $log->update($attributes);
+        } catch (\Throwable $e) {
+            Log::warning("[Saga] Could not update saga log #{$log->id}: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Determine the final status after compensation: compensated if all steps
+     * compensated successfully, failed if any compensation also failed.
+     */
+    private function resolveCompensationStatus(array $compensationLog): string
+    {
+        foreach ($compensationLog as $entry) {
+            if (($entry['status'] ?? '') === 'compensation_failed') {
+                return SagaLog::STATUS_FAILED;
+            }
+        }
+
+        return SagaLog::STATUS_COMPENSATED;
+    }
+
+    /**
+     * Safely serialize context for storage, stripping un-serializable objects.
+     *
+     * Note: This representation is for observability and post-mortem debugging only.
+     * Model instances are flattened to arrays and cannot be automatically
+     * reconstructed. Recovery operations must reload models from the database.
+     */
+    private function safeSerializeContext(array $context): array
+    {
+        $safe = [];
+
+        foreach ($context as $key => $value) {
+            if (is_scalar($value) || is_null($value) || is_array($value)) {
+                $safe[$key] = $value;
+            } elseif ($value instanceof \Illuminate\Database\Eloquent\Model) {
+                $safe[$key] = $value->toArray();
+            }
+            // Skip non-serializable objects (e.g. closures, connections)
+        }
+
+        return $safe;
     }
 }

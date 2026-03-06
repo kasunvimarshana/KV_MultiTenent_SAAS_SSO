@@ -38,6 +38,7 @@ return [
         'order.created',
         'order.confirmed',
         'order.cancelled',
+        'order.status_changed',
         'order.delivered',
         'inventory.updated',
         'inventory.low_stock',

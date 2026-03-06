@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Events\OrderCancelledEvent;
 use App\Events\OrderCreatedEvent;
+use App\Events\OrderStatusChangedEvent;
 use App\Models\Order;
 use App\Repositories\OrderRepository;
 use App\Saga\SagaOrchestrator;
@@ -37,7 +39,7 @@ class OrderService extends BaseService
             new CreateOrderStep(),
             new ReserveInventoryStep(),
             new ProcessPaymentStep(),
-        ], $data);
+        ], $data, 'place_order');
 
         if (!$result->isSuccessful()) {
             throw new \App\Exceptions\SagaException(
@@ -84,13 +86,32 @@ class OrderService extends BaseService
                 }
             }
 
-            return $order->fresh('items');
+            $order = $order->fresh('items');
+
+            event(new OrderCancelledEvent($order, $reason));
+
+            return $order;
         });
     }
 
     public function updateStatus(int $orderId, string $status): Order
     {
-        return $this->repository->update($orderId, ['status' => $status]);
+        $order = $this->repository->find($orderId);
+
+        if (!$order) {
+            throw new \Illuminate\Database\Eloquent\ModelNotFoundException('Order not found');
+        }
+
+        $previousStatus = $order->status;
+
+        $order->update(['status' => $status]);
+        $order->refresh();
+
+        if ($previousStatus !== $status) {
+            event(new OrderStatusChangedEvent($order, $previousStatus, $status));
+        }
+
+        return $order;
     }
 
     public function getOrdersByUser(int $userId): Collection

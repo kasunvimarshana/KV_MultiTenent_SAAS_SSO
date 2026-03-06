@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Outbox\OutboxProcessor;
+use App\Outbox\OutboxPublisher;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -9,6 +11,9 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->singleton(\App\Saga\SagaOrchestrator::class);
+
+        $this->app->singleton(OutboxPublisher::class);
+        $this->app->singleton(OutboxProcessor::class);
     }
 
     public function boot(): void
