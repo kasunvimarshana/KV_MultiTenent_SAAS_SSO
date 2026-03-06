@@ -3,8 +3,8 @@
 namespace App\Listeners;
 
 use App\Events\InventoryUpdatedEvent;
-use App\MessageBroker\Contracts\MessageBrokerInterface;
-use App\Services\WebhookService;
+use App\Models\Inventory;
+use App\Outbox\OutboxPublisher;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Facades\Log;
 
@@ -13,33 +13,23 @@ class InventoryUpdatedListener implements ShouldQueue
     public string $queue = 'events';
 
     public function __construct(
-        private readonly MessageBrokerInterface $broker,
-        private readonly WebhookService $webhookService
+        private readonly OutboxPublisher $outboxPublisher
     ) {
     }
 
     public function handle(InventoryUpdatedEvent $event): void
     {
-        // Publish to message broker
-        $this->broker->publish('inventory.updated', $event->toPayload());
+        // Persist the event to the outbox for reliable, at-least-once delivery.
+        // The OutboxProcessor will forward it to the message broker and webhooks.
+        $this->outboxPublisher->store($event, Inventory::class, $event->inventory->id);
 
-        // Trigger low-stock webhooks if applicable
-        if ($event->inventory->quantity <= ($event->inventory->product->low_stock_threshold ?? 10)) {
-            $this->webhookService->dispatchWebhook(
-                'inventory.low_stock',
-                $event->toPayload(),
-                $event->tenantId
-            );
+        // Also queue a low-stock outbox entry when inventory drops below threshold.
+        $threshold = $event->inventory->product->low_stock_threshold ?? 10;
+        if ($event->inventory->quantity <= $threshold) {
+            $this->outboxPublisher->storeLowStock($event->inventory, $event->tenantId);
         }
 
-        // Trigger webhooks for subscribed endpoints
-        $this->webhookService->dispatchWebhook(
-            'inventory.updated',
-            $event->toPayload(),
-            $event->tenantId
-        );
-
-        Log::info("[InventoryUpdatedListener] Inventory updated for product #{$event->inventory->product_id}", [
+        Log::info("[InventoryUpdatedListener] Queued inventory.updated event in outbox for product #{$event->inventory->product_id}", [
             'action'    => $event->action,
             'qty_delta' => $event->quantityChanged,
             'tenant_id' => $event->tenantId,

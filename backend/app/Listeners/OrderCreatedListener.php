@@ -3,8 +3,8 @@
 namespace App\Listeners;
 
 use App\Events\OrderCreatedEvent;
-use App\MessageBroker\Contracts\MessageBrokerInterface;
-use App\Services\WebhookService;
+use App\Models\Order;
+use App\Outbox\OutboxPublisher;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Facades\Log;
 
@@ -13,24 +13,17 @@ class OrderCreatedListener implements ShouldQueue
     public string $queue = 'events';
 
     public function __construct(
-        private readonly MessageBrokerInterface $broker,
-        private readonly WebhookService $webhookService
+        private readonly OutboxPublisher $outboxPublisher
     ) {
     }
 
     public function handle(OrderCreatedEvent $event): void
     {
-        // Publish to message broker for other services
-        $this->broker->publish('order.created', $event->toPayload());
+        // Persist the event to the outbox for reliable, at-least-once delivery.
+        // The OutboxProcessor will forward it to the message broker and webhooks.
+        $this->outboxPublisher->store($event, Order::class, $event->order->id);
 
-        // Trigger webhooks for subscribed endpoints
-        $this->webhookService->dispatchWebhook(
-            'order.created',
-            $event->toPayload(),
-            $event->tenantId
-        );
-
-        Log::info("[OrderCreatedListener] Order #{$event->order->order_number} processed.", [
+        Log::info("[OrderCreatedListener] Queued order.created event in outbox for order #{$event->order->order_number}", [
             'order_id'  => $event->order->id,
             'tenant_id' => $event->tenantId,
         ]);
